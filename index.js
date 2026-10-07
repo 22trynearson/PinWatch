@@ -13,7 +13,7 @@ const POLL_MS = Math.max(10000, Number(process.env.POLL_MS || 15000));
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_FROM = process.env.TWILIO_FROM;
-const ALERT_TO = process.env.ALERT_TO;
+const ALERT_TO_NUMBERS = String(process.env.ALERT_TO || "")\n  .split(",")\n  .map(n => n.trim())\n  .filter(Boolean);
 
 const client = TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN
   ? twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -61,7 +61,7 @@ async function sendAlert(kind, title, link) {
   lastAlert = { kind, title, link, at: now() };
   console.log("[ALERT]", lastAlert);
 
-  if (!client || !TWILIO_FROM || !ALERT_TO) {
+  if (!client || !TWILIO_FROM || ALERT_TO_NUMBERS.length === 0) {
     console.log("Twilio not configured yet; alert logged only.");
     return;
   }
@@ -70,25 +70,29 @@ async function sendAlert(kind, title, link) {
     ? `🚨 PINWATCH: A queue/waiting room appears to be live on Pink a la Mode. Open now: ${link}`
     : `📌 PINWATCH: New item detected: ${title}. ${link}`;
 
-  try {
-    await client.messages.create({
-      from: TWILIO_FROM,
-      to: ALERT_TO,
-      body: smsBody
-    });
-  } catch (err) {
-    console.error("SMS failed:", err.message);
-  }
+  const callMessage = kind === "queue"
+    ? "Good day, sir. A Pink a la Mode queue is live. Open the website now."
+    : `Good day, sir. Pin Watch detected a new pin: ${title}. I have sent the link to your phone.`;
 
-  if (kind === "queue") {
+  for (const to of ALERT_TO_NUMBERS) {
+    try {
+      await client.messages.create({
+        from: TWILIO_FROM,
+        to,
+        body: smsBody
+      });
+    } catch (err) {
+      console.error(`SMS failed for ${to}:`, err.message);
+    }
+
     try {
       await client.calls.create({
         from: TWILIO_FROM,
-        to: ALERT_TO,
-        twiml: `<Response><Say voice="Polly.Amy">Pin Watch alert. A queue is live on Pink a la Mode. Open the website now.</Say></Response>`
+        to,
+        twiml: `<Response><Say voice="Polly.Amy">${callMessage}</Say></Response>`
       });
     } catch (err) {
-      console.error("Call failed:", err.message);
+      console.error(`Call failed for ${to}:`, err.message);
     }
   }
 }
@@ -220,7 +224,7 @@ app.get("/", (_req, res) => {
     lastCheck,
     lastError,
     lastAlert,
-    twilioConfigured: Boolean(client && TWILIO_FROM && ALERT_TO)
+    twilioConfigured: Boolean(client && TWILIO_FROM && ALERT_TO_NUMBERS.length > 0)
   });
 });
 
@@ -230,17 +234,21 @@ app.get("/test-call-8f93c2b1", async (_req, res) => {
   if (testCallUsed) return res.status(410).json({ ok: false, error: "test already used" });
   testCallUsed = true;
 
-  if (!client || !TWILIO_FROM || !ALERT_TO) {
+  if (!client || !TWILIO_FROM || ALERT_TO_NUMBERS.length === 0) {
     return res.status(500).json({ ok: false, error: "Twilio not configured" });
   }
 
   try {
-    const call = await client.calls.create({
-      from: TWILIO_FROM,
-      to: ALERT_TO,
-      twiml: '<Response><Say voice="Polly.Amy">Pin Watch test successful. Your queue alert phone call is working.</Say></Response>'
-    });
-    res.json({ ok: true, callSid: call.sid, status: call.status });
+    const calls = [];
+    for (const to of ALERT_TO_NUMBERS) {
+      const call = await client.calls.create({
+        from: TWILIO_FROM,
+        to,
+        twiml: '<Response><Say voice="Polly.Amy">Pin Watch test successful. Your alert phone call is working.</Say></Response>'
+      });
+      calls.push({ to, callSid: call.sid, status: call.status });
+    }
+    res.json({ ok: true, calls });
   } catch (err) {
     console.error("Test call failed:", err.message);
     res.status(500).json({ ok: false, error: err.message });
@@ -250,19 +258,21 @@ app.get("/test-call-8f93c2b1", async (_req, res) => {
 
 app.listen(PORT, () => {
   console.log(`PinWatch listening on port ${PORT}`);
-  console.log(`Twilio configured: ${Boolean(client && TWILIO_FROM && ALERT_TO)}`);
+  console.log(`Twilio configured: ${Boolean(client && TWILIO_FROM && ALERT_TO_NUMBERS.length > 0)}`);
 
-  if (process.env.TEST_CALL_ON_START === "true" && client && TWILIO_FROM && ALERT_TO) {
+  if (process.env.TEST_CALL_ON_START === "true" && client && TWILIO_FROM && ALERT_TO_NUMBERS.length > 0) {
     setTimeout(async () => {
-      try {
-        const call = await client.calls.create({
-          from: TWILIO_FROM,
-          to: ALERT_TO,
-          twiml: '<Response><Say voice="Polly.Amy">Pin Watch test successful. Your queue alert phone call is working.</Say></Response>'
-        });
-        console.log(`Startup test call queued: ${call.sid}`);
-      } catch (err) {
-        console.error(`Startup test call failed: ${err.message}`);
+      for (const to of ALERT_TO_NUMBERS) {
+        try {
+          const call = await client.calls.create({
+            from: TWILIO_FROM,
+            to,
+            twiml: '<Response><Say voice="Polly.Amy">Pin Watch test successful. Your alert phone call is working.</Say></Response>'
+          });
+          console.log(`Startup test call queued for ${to}: ${call.sid}`);
+        } catch (err) {
+          console.error(`Startup test call failed for ${to}: ${err.message}`);
+        }
       }
     }, 3000);
   }
