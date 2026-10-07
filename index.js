@@ -251,4 +251,19 @@ app.get("/test-call-8f93c2b1", async (_req, res) => {
 app.listen(PORT, () => {
   console.log(`PinWatch listening on port ${PORT}`);
   console.log(`Twilio configured: ${Boolean(client && TWILIO_FROM && ALERT_TO)}`);
+
+  if (process.env.TEST_CALL_ON_START === "true" && client && TWILIO_FROM && ALERT_TO) {
+    setTimeout(async () => {
+      try {
+        const call = await client.calls.create({
+          from: TWILIO_FROM,
+          to: ALERT_TO,
+          twiml: '<Response><Say voice="Polly.Amy">Pin Watch test successful. Your queue alert phone call is working.</Say></Response>'
+        });
+        console.log(`Startup test call queued: ${call.sid}`);
+      } catch (err) {
+        console.error(`Startup test call failed: ${err.message}`);
+      }
+    }, 3000);
+  }
 });
