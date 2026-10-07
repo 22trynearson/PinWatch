@@ -3,6 +3,7 @@ const axios = require("axios");
 const twilio = require("twilio");
 
 const app = express();
+app.use(express.json({ limit: "64kb" }));
 const PORT = process.env.PORT || 10000;
 
 const SITE_URL = process.env.SITE_URL || "https://www.pinkalamode.com/";
@@ -14,6 +15,8 @@ const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_FROM = process.env.TWILIO_FROM;
 const ALERT_TO = process.env.ALERT_TO;
+const BROWSER_MODE = String(process.env.BROWSER_MODE || "").toLowerCase() === "true";
+const BROWSER_ALERT_TOKEN = process.env.BROWSER_ALERT_TOKEN || "";
 
 const client = TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN
   ? twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -57,8 +60,17 @@ function looksLikeQueue(response) {
     bodySignals.some(s => body.includes(s));
 }
 
-async function sendAlert(kind, title, link) {
-  lastAlert = { kind, title, link, at: now() };
+function escapeXml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+async function sendAlert(kind, title, link, waitText = "") {
+  lastAlert = { kind, title, link, waitText, at: now() };
   console.log("[ALERT]", lastAlert);
 
   if (!client || !TWILIO_FROM || !ALERT_TO) {
@@ -66,9 +78,14 @@ async function sendAlert(kind, title, link) {
     return;
   }
 
-  const smsBody = kind === "queue"
-    ? `🚨 PINWATCH: A queue/waiting room appears to be live on Pink a la Mode. Open now: ${link}`
-    : `📌 PINWATCH: New item detected: ${title}. ${link}`;
+  const isQueue = kind === "queue";
+  const safeTitle = title || (isQueue ? "Queue detected" : "New pin");
+  const safeLink = link || COLLECTION_URL;
+  const queueDetail = waitText ? ` Estimated wait: ${waitText}.` : "";
+
+  const smsBody = isQueue
+    ? `🚨 PINWATCH: Pink a la Mode queue is live.${waitText ? ` Estimated wait: ${waitText}.` : ""} Open now: ${safeLink}`
+    : `📌 PINWATCH: ${kind === "restock" ? "Restock" : "New pin"} detected: ${safeTitle}. ${safeLink}`;
 
   try {
     await client.messages.create({
@@ -80,19 +97,20 @@ async function sendAlert(kind, title, link) {
     console.error("SMS failed:", err.message);
   }
 
-  if (kind === "queue") {
-    try {
-      await client.calls.create({
-        from: TWILIO_FROM,
-        to: ALERT_TO,
-        twiml: `<Response><Say voice="Polly.Amy">Pin Watch alert. A queue is live on Pink a la Mode. Open the website now.</Say></Response>`
-      });
-    } catch (err) {
-      console.error("Call failed:", err.message);
-    }
+  const spoken = isQueue
+    ? `Hey Tyler. Pink a la Mode has opened a queue.${queueDetail} I sent you the New Arrivals link.`
+    : `Hey Tyler. ${kind === "restock" ? "A pin has restocked" : "A new pin has just been detected"} on Pink a la Mode: ${safeTitle}. I sent you the product link.`;
+
+  try {
+    await client.calls.create({
+      from: TWILIO_FROM,
+      to: ALERT_TO,
+      twiml: `<Response><Say voice="Polly.Amy">${escapeXml(spoken)}</Say></Response>`
+    });
+  } catch (err) {
+    console.error("Call failed:", err.message);
   }
 }
-
 async function checkQueue() {
   try {
     const response = await axios.get(SITE_URL, {
@@ -263,11 +281,58 @@ async function checkProducts() {
 
 async function tick() {
   lastCheck = now();
+  if (BROWSER_MODE) return;
   await Promise.allSettled([checkQueue(), checkProducts()]);
 }
 
 setInterval(tick, POLL_MS);
 tick();
+
+
+const recentBrowserEvents = new Map();
+
+function browserEventKey(kind, title, link) {
+  return [kind, title || "", link || ""].join("|");
+}
+
+app.post("/browser-alert", async (req, res) => {
+  const suppliedToken = req.get("x-pinwatch-token") || "";
+  if (!BROWSER_ALERT_TOKEN || suppliedToken !== BROWSER_ALERT_TOKEN) {
+    return res.status(401).json({ ok: false, error: "unauthorized" });
+  }
+
+  const body = req.body || {};
+  const kind = String(body.kind || "").toLowerCase();
+  const title = String(body.title || "");
+  const link = String(body.link || COLLECTION_URL);
+  const waitText = String(body.waitText || "");
+
+  if (!["queue", "product", "restock"].includes(kind)) {
+    return res.status(400).json({ ok: false, error: "invalid kind" });
+  }
+
+  const key = browserEventKey(kind, title, link);
+  const nowMs = Date.now();
+  const lastMs = recentBrowserEvents.get(key) || 0;
+  const duplicateWindowMs = kind === "queue" ? 15 * 60 * 1000 : 6 * 60 * 60 * 1000;
+
+  if (nowMs - lastMs < duplicateWindowMs) {
+    return res.json({ ok: true, duplicate: true });
+  }
+
+  recentBrowserEvents.set(key, nowMs);
+  for (const [eventKey, eventTime] of recentBrowserEvents.entries()) {
+    if (nowMs - eventTime > 24 * 60 * 60 * 1000) recentBrowserEvents.delete(eventKey);
+  }
+
+  try {
+    await sendAlert(kind, title, link, waitText);
+    res.json({ ok: true, duplicate: false });
+  } catch (err) {
+    console.error("Browser alert failed:", err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 app.get("/", (_req, res) => {
   res.json({
