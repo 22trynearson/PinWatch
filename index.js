@@ -123,7 +123,7 @@ async function checkQueue() {
 function extractProductHandles(html) {
   const handles = new Set();
   const text = String(html || "");
-  const regex = new RegExp('href=["\\\\\'](?:https?:\\\\/\\\\/www\\\\.pinkalamode\\\\.com)?\\\\/products\\\\/([^"\\\\\'?#/]+)[^"\\\\\']*["\\\\\']', 'gi');
+  const regex = new RegExp("href=[\\\"'](?:https?:\\/\\/www\\.pinkalamode\\.com)?\\/products\\/([^\\\"'?#/]+)[^\\\"']*[\\\"']", "gi");
   let match;
   while ((match = regex.exec(text)) !== null) {
     handles.add(match[1]);
