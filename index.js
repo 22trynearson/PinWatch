@@ -131,36 +131,95 @@ function extractProductHandles(html) {
   return handles;
 }
 
+let productSitemapUrl = null;
+
+function browserHeaders(accept) {
+  return {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "Accept": accept,
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache"
+  };
+}
+
+async function loadFromSitemap() {
+  if (!productSitemapUrl) {
+    const root = await axios.get("https://www.pinkalamode.com/sitemap.xml", {
+      timeout: 10000,
+      headers: browserHeaders("application/xml,text/xml;q=0.9,*/*;q=0.8"),
+      validateStatus: () => true
+    });
+
+    if (root.status >= 400) {
+      throw new Error(`Root sitemap returned HTTP ${root.status}`);
+    }
+
+    const xml = String(root.data || "");
+    const match = xml.match(/<loc>([^<]*sitemap_products_1\.xml[^<]*)<\/loc>/i);
+    if (!match) throw new Error("Product sitemap URL not found");
+
+    productSitemapUrl = match[1].replace(/&amp;/g, "&");
+  }
+
+  const response = await axios.get(productSitemapUrl, {
+    timeout: 10000,
+    headers: browserHeaders("application/xml,text/xml;q=0.9,*/*;q=0.8"),
+    validateStatus: () => true
+  });
+
+  if (response.status >= 400) {
+    productSitemapUrl = null;
+    throw new Error(`Product sitemap returned HTTP ${response.status}`);
+  }
+
+  const xml = String(response.data || "");
+  const products = new Map();
+  const regex = /<loc>https?:\/\/www\.pinkalamode\.com\/products\/([^<\/?#]+)[^<]*<\/loc>/gi;
+  let match;
+
+  while ((match = regex.exec(xml)) !== null) {
+    const handle = decodeURIComponent(match[1]);
+    products.set(handle, {
+      title: handle.replace(/-/g, " "),
+      link: `https://www.pinkalamode.com/products/${handle}`
+    });
+  }
+
+  if (!products.size) throw new Error("Product sitemap contained no products");
+  console.log(`Product source: Shopify sitemap (${products.size} products)`);
+  return products;
+}
+
 async function loadProductHandles() {
+  try {
+    return await loadFromSitemap();
+  } catch (err) {
+    console.error(`Product sitemap check: ${err.message}`);
+  }
+
   try {
     const response = await axios.get(PRODUCTS_JSON, {
       timeout: 10000,
-      headers: {
-        "User-Agent": "Mozilla/5.0 PinWatch/1.0",
-        "Accept": "application/json"
-      }
+      headers: browserHeaders("application/json,text/plain,*/*")
     });
 
     const products = Array.isArray(response.data?.products) ? response.data.products : [];
     if (products.length) {
+      console.log(`Product source: Shopify collection JSON (${products.length} products)`);
       return new Map(products.map(p => [String(p.handle || p.id), {
         title: p.title || "New product",
         link: p.handle ? `https://www.pinkalamode.com/products/${p.handle}` : COLLECTION_URL
       }]));
     }
   } catch (err) {
-    if (err.response?.status !== 403) {
-      console.error(`Product JSON check: ${err.message}`);
-    }
+    console.error(`Product JSON check: ${err.message}`);
   }
 
   const response = await axios.get(COLLECTION_URL, {
     timeout: 10000,
     maxRedirects: 10,
-    headers: {
-      "User-Agent": "Mozilla/5.0 PinWatch/1.0",
-      "Accept": "text/html,application/xhtml+xml"
-    },
+    headers: browserHeaders("text/html,application/xhtml+xml"),
     validateStatus: () => true
   });
 
@@ -169,6 +228,7 @@ async function loadProductHandles() {
   }
 
   const handles = extractProductHandles(response.data);
+  console.log(`Product source: collection HTML (${handles.size} products)`);
   return new Map(Array.from(handles).map(handle => [handle, {
     title: handle.replace(/-/g, " "),
     link: `https://www.pinkalamode.com/products/${handle}`
