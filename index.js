@@ -3,7 +3,6 @@ const axios = require("axios");
 const twilio = require("twilio");
 
 const app = express();
-app.use(express.urlencoded({ extended: false }));
 const PORT = process.env.PORT || 10000;
 
 const SITE_URL = process.env.SITE_URL || "https://www.pinkalamode.com/";
@@ -227,15 +226,6 @@ app.get("/", (_req, res) => {
 
 app.get("/health", (_req, res) => res.status(200).send("ok"));
 
-app.post("/twilio-call-status", (req, res) => {
-  console.log("[TWILIO CALL STATUS]", {
-    callSid: req.body.CallSid,
-    callStatus: req.body.CallStatus,
-    errorCode: req.body.ErrorCode,
-    errorMessage: req.body.ErrorMessage
-  });
-  res.status(204).send();
-});
 let testCallUsed = false;
 app.get("/test-call-8f93c2b1", async (_req, res) => {
   if (testCallUsed) return res.status(410).json({ ok: false, error: "test already used" });
