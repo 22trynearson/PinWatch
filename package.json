@@ -1,0 +1,18 @@
+{
+  "name": "pinwatch",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pink a la Mode queue and pin-drop watcher",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "axios": "^1.12.2",
+    "express": "^5.1.0",
+    "twilio": "^5.10.4"
+  }
+}
