@@ -225,6 +225,28 @@ app.get("/", (_req, res) => {
 });
 
 app.get("/health", (_req, res) => res.status(200).send("ok"));
+let testCallUsed = false;
+app.get("/test-call-8f93c2b1", async (_req, res) => {
+  if (testCallUsed) return res.status(410).json({ ok: false, error: "test already used" });
+  testCallUsed = true;
+
+  if (!client || !TWILIO_FROM || !ALERT_TO) {
+    return res.status(500).json({ ok: false, error: "Twilio not configured" });
+  }
+
+  try {
+    const call = await client.calls.create({
+      from: TWILIO_FROM,
+      to: ALERT_TO,
+      twiml: '<Response><Say voice="Polly.Amy">Pin Watch test successful. Your queue alert phone call is working.</Say></Response>'
+    });
+    res.json({ ok: true, callSid: call.sid, status: call.status });
+  } catch (err) {
+    console.error("Test call failed:", err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 
 app.listen(PORT, () => {
   console.log(`PinWatch listening on port ${PORT}`);
