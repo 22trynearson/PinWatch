@@ -120,7 +120,18 @@ async function checkQueue() {
   }
 }
 
-async function checkProducts() {
+function extractProductHandles(html) {
+  const handles = new Set();
+  const text = String(html || "");
+  const regex = /href=["'](?:https?:\\/\\/www\\.pinkalamode\\.com)?\\/products\\/([^"'?#/]+)[^"']*["']/gi;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    handles.add(match[1]);
+  }
+  return handles;
+}
+
+async function loadProductHandles() {
   try {
     const response = await axios.get(PRODUCTS_JSON, {
       timeout: 10000,
@@ -130,11 +141,44 @@ async function checkProducts() {
       }
     });
 
-    const products = Array.isArray(response.data?.products)
-      ? response.data.products
-      : [];
+    const products = Array.isArray(response.data?.products) ? response.data.products : [];
+    if (products.length) {
+      return new Map(products.map(p => [String(p.handle || p.id), {
+        title: p.title || "New product",
+        link: p.handle ? `https://www.pinkalamode.com/products/${p.handle}` : COLLECTION_URL
+      }]));
+    }
+  } catch (err) {
+    if (err.response?.status !== 403) {
+      console.error(`Product JSON check: ${err.message}`);
+    }
+  }
 
-    const currentIds = new Set(products.map(p => String(p.id)));
+  const response = await axios.get(COLLECTION_URL, {
+    timeout: 10000,
+    maxRedirects: 10,
+    headers: {
+      "User-Agent": "Mozilla/5.0 PinWatch/1.0",
+      "Accept": "text/html,application/xhtml+xml"
+    },
+    validateStatus: () => true
+  });
+
+  if (response.status >= 400) {
+    throw new Error(`Collection page returned HTTP ${response.status}`);
+  }
+
+  const handles = extractProductHandles(response.data);
+  return new Map(Array.from(handles).map(handle => [handle, {
+    title: handle.replace(/-/g, " "),
+    link: `https://www.pinkalamode.com/products/${handle}`
+  }]));
+}
+
+async function checkProducts() {
+  try {
+    const products = await loadProductHandles();
+    const currentIds = new Set(products.keys());
 
     if (!baselineLoaded) {
       knownProductIds = currentIds;
@@ -143,18 +187,14 @@ async function checkProducts() {
       return;
     }
 
-    for (const product of products) {
-      const id = String(product.id);
+    for (const [id, product] of products.entries()) {
       if (!knownProductIds.has(id)) {
-        const handle = product.handle;
-        const link = handle
-          ? `https://www.pinkalamode.com/products/${handle}`
-          : COLLECTION_URL;
-        await sendAlert("product", product.title || "New product", link);
+        await sendAlert("product", product.title, product.link);
       }
     }
 
     knownProductIds = currentIds;
+    lastError = null;
   } catch (err) {
     lastError = `Product check: ${err.message}`;
     console.error(lastError);
@@ -188,4 +228,5 @@ app.get("/health", (_req, res) => res.status(200).send("ok"));
 
 app.listen(PORT, () => {
   console.log(`PinWatch listening on port ${PORT}`);
+  console.log(`Twilio configured: ${Boolean(client && TWILIO_FROM && ALERT_TO)}`);
 });
